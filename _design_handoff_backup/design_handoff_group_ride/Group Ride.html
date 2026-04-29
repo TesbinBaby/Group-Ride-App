@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Group Ride — Material 3 prototype</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #f0eee9;
+    font-family: 'Roboto Flex', Roboto, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased; }
+  * { box-sizing: border-box; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="tokens.jsx"></script>
+<script type="text/babel" src="primitives.jsx"></script>
+<script type="text/babel" src="map-canvas.jsx"></script>
+<script type="text/babel" src="screens.jsx"></script>
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="ios-frame.jsx"></script>
+<script type="text/babel" src="android-frame.jsx"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+
+// Tweak defaults — edited by host
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "seedKey": "teal",
+  "dark": false,
+  "mapStyle": "realistic",
+  "riderCount": 6,
+  "signatureFeature": "breadcrumb"
+}/*EDITMODE-END*/;
+
+const SIGNATURE_OPTIONS = [
+  { value: 'breadcrumb', label: 'Breadcrumb trail' },
+  { value: 'leadSweep',  label: 'Lead & Sweep' },
+  { value: 'voice',      label: 'Voice channel' },
+  { value: 'pins',       label: 'Live rider pins' },
+  { value: 'waypoints',  label: 'Shared waypoints' },
+  { value: 'none',       label: 'Off' },
+];
+
+const MAP_STYLE_OPTIONS = [
+  { value: 'realistic', label: 'Realistic' },
+  { value: 'stylized',  label: 'Stylized'  },
+  { value: 'schematic', label: 'Schematic' },
+];
+
+function usePersist(initial) {
+  const [cfg, setCfg] = useState(() => {
+    try {
+      const saved = localStorage.getItem('groupride-cfg');
+      if (saved) return { ...initial, ...JSON.parse(saved) };
+    } catch (e) {}
+    return initial;
+  });
+  useEffect(() => {
+    try { localStorage.setItem('groupride-cfg', JSON.stringify(cfg)); } catch (e) {}
+  }, [cfg]);
+  return [cfg, setCfg];
+}
+
+// ─── Bottom nav (Material 3) ───
+function MBottomNav({ color, tabs, value, onChange }) {
+  return (
+    <div style={{
+      display: 'flex', justifyContent: 'space-around', alignItems: 'center',
+      height: 80, background: color.surfaceContainer,
+      borderTop: `1px solid ${color.outlineVariant}`,
+      padding: '12px 4px 16px',
+    }}>
+      {tabs.map(t => {
+        const sel = t.id === value;
+        return (
+          <button key={t.id} onClick={() => onChange(t.id)} className="gr-press" style={{
+            background: 'transparent', border: 'none', flex: 1,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, cursor: 'pointer',
+          }}>
+            <div style={{
+              height: 32, width: 64, borderRadius: 16,
+              background: sel ? color.secondaryContainer : 'transparent',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <Icon name={t.icon} size={22} color={sel ? color.onPrimaryContainer : color.onSurfaceVariant}/>
+            </div>
+            <div style={{ ...TYPE.labelM, color: sel ? color.onSurface : color.onSurfaceVariant }}>{t.label}</div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+const TABS = [
+  { id: 'home',    label: 'Group',   icon: 'people' },
+  { id: 'mapA',    label: 'Live',    icon: 'mapPin' },
+  { id: 'plan',    label: 'Plan',    icon: 'route' },
+  { id: 'chat',    label: 'Chat',    icon: 'chat' },
+];
+
+// Screen chooser — used to fill each artboard
+function ScreenById({ id, color, config, platform }) {
+  switch (id) {
+    case 'home':    return <GroupHomeScreen color={color} config={config} platform={platform}/>;
+    case 'mapA':    return <LiveMapSquadScreen color={color} config={config} platform={platform}/>;
+    case 'mapB':    return <LiveMapConvoyScreen color={color} config={config} platform={platform}/>;
+    case 'plan':    return <PlanRideScreen color={color} config={config} platform={platform}/>;
+    case 'chat':    return <ChatScreen color={color} config={config} platform={platform}/>;
+    case 'nav':     return <TurnByTurnScreen color={color} config={config} platform={platform}/>;
+    case 'regroup': return <RegroupScreen color={color} config={config} platform={platform}/>;
+    case 'recap':   return <RecapScreen color={color} config={config} platform={platform}/>;
+    case 'invite':  return <InviteScreen color={color} config={config} platform={platform}/>;
+    default:        return null;
+  }
+}
+
+// A full phone frame with the bottom nav — used for "main" screens
+function Phone({ kind, screenId, color, config, tabValue, setTab, showBottomNav = true }) {
+  const platform = kind;
+  const mainIds = ['home','mapA','plan','chat'];
+  const topLevel = mainIds.includes(screenId);
+
+  // Choose title and whether to inset content
+  const content = (
+    <div className="gr-root" style={{ height: '100%', display: 'flex', flexDirection: 'column', background: color.surface }}>
+      <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
+        <ScreenById id={screenId} color={color} config={config} platform={platform}/>
+      </div>
+      {showBottomNav && topLevel && (
+        <MBottomNav color={color} tabs={TABS} value={screenId === 'mapA' ? 'mapA' : screenId}
+                    onChange={(id) => setTab(id)}/>
+      )}
+    </div>
+  );
+
+  if (kind === 'ios') {
+    return (
+      <IOSDevice dark={config.dark} width={402} height={874}>
+        {content}
+      </IOSDevice>
+    );
+  }
+  return (
+    <AndroidDevice dark={config.dark} width={412} height={892}>
+      {content}
+    </AndroidDevice>
+  );
+}
+
+// ─── Tweaks panel ───
+function TweaksPanel({ config, setConfig, onClose }) {
+  const color = m3(config.seedKey, config.dark);
+  const set = (patch) => {
+    setConfig(c => ({ ...c, ...patch }));
+    try {
+      window.parent.postMessage({ type: '__edit_mode_set_keys', edits: patch }, '*');
+    } catch (e) {}
+  };
+  return (
+    <div style={{
+      position: 'fixed', right: 20, bottom: 20, width: 320,
+      background: '#1a1a1a', color: '#fff', borderRadius: 20,
+      boxShadow: '0 20px 50px rgba(0,0,0,0.4)',
+      padding: 20, zIndex: 1000,
+      fontFamily: "'Roboto Flex', Roboto, system-ui",
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
+        <div style={{ fontSize: 16, fontWeight: 600, flex: 1 }}>Tweaks</div>
+        <button onClick={onClose} style={{
+          width: 28, height: 28, borderRadius: 14, border: 'none',
+          background: 'rgba(255,255,255,0.1)', color: '#fff', cursor: 'pointer',
+        }}>×</button>
+      </div>
+
+      <TweakLabel>Accent</TweakLabel>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        {Object.entries(SEEDS).map(([k, v]) => (
+          <button key={k} onClick={() => set({ seedKey: k })} style={{
+            width: 36, height: 36, borderRadius: 10, cursor: 'pointer',
+            background: `oklch(0.55 0.14 ${v.hue})`,
+            border: config.seedKey === k ? '2px solid #fff' : '2px solid transparent',
+            transition: 'transform .15s',
+          }} title={v.name}/>
+        ))}
+      </div>
+
+      <TweakLabel>Theme</TweakLabel>
+      <ToggleRow
+        value={config.dark ? 'dark' : 'light'}
+        options={[{ value:'light', label:'Light'}, { value:'dark', label:'Dark'}]}
+        onChange={v => set({ dark: v === 'dark' })}/>
+
+      <TweakLabel>Map style</TweakLabel>
+      <ToggleRow value={config.mapStyle} options={MAP_STYLE_OPTIONS}
+                 onChange={v => set({ mapStyle: v })}/>
+
+      <TweakLabel>Riders ({config.riderCount})</TweakLabel>
+      <input type="range" min="1" max="20" value={config.riderCount}
+             onChange={e => set({ riderCount: +e.target.value })}
+             style={{ width: '100%', accentColor: `oklch(0.7 0.14 ${SEEDS[config.seedKey].hue})` }}/>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#aaa', marginTop: 2, marginBottom: 12 }}>
+        <span>1 · solo</span><span>6 · group</span><span>20 · convoy</span>
+      </div>
+
+      <TweakLabel>Signature feature</TweakLabel>
+      <select value={config.signatureFeature} onChange={e => set({ signatureFeature: e.target.value })}
+              style={{
+                width: '100%', height: 36, borderRadius: 10,
+                background: 'rgba(255,255,255,0.1)', color: '#fff',
+                border: '1px solid rgba(255,255,255,0.2)', padding: '0 10px', fontSize: 13,
+              }}>
+        {SIGNATURE_OPTIONS.map(o => <option key={o.value} value={o.value} style={{ color: '#000' }}>{o.label}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function TweakLabel({ children }) {
+  return <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: '#aaa', marginBottom: 6, marginTop: 4 }}>{children}</div>;
+}
+
+function ToggleRow({ value, options, onChange }) {
+  return (
+    <div style={{ display: 'flex', background: 'rgba(255,255,255,0.08)', borderRadius: 10, padding: 2, marginBottom: 12 }}>
+      {options.map(o => (
+        <button key={o.value} onClick={() => onChange(o.value)} style={{
+          flex: 1, height: 32, borderRadius: 8, border: 'none',
+          background: value === o.value ? 'rgba(255,255,255,0.15)' : 'transparent',
+          color: '#fff', fontSize: 13, cursor: 'pointer',
+        }}>{o.label}</button>
+      ))}
+    </div>
+  );
+}
+
+// ─── App ───
+function App() {
+  const [config, setConfig] = usePersist(TWEAK_DEFAULTS);
+  const [tab, setTab] = useState('mapA');
+  const [tweaksOpen, setTweaksOpen] = useState(false);
+  const color = useMemo(() => m3(config.seedKey, config.dark), [config.seedKey, config.dark]);
+
+  // Tweaks integration with host
+  useEffect(() => {
+    const onMsg = (e) => {
+      if (e.data?.type === '__activate_edit_mode') setTweaksOpen(true);
+      if (e.data?.type === '__deactivate_edit_mode') setTweaksOpen(false);
+    };
+    window.addEventListener('message', onMsg);
+    try { window.parent.postMessage({ type: '__edit_mode_available' }, '*'); } catch(e) {}
+    return () => window.removeEventListener('message', onMsg);
+  }, []);
+
+  return (
+    <DesignCanvas>
+      <DCSection id="main" title="Group Ride" subtitle="Material 3 · iOS + Android · tap Tweaks for live knobs">
+        <DCArtboard id="ios-home" label="iOS · Group home" width={402} height={874}>
+          <Phone kind="ios" screenId="home" color={color} config={config}
+                 tabValue="home" setTab={setTab}/>
+        </DCArtboard>
+        <DCArtboard id="android-home" label="Android · Group home" width={428} height={908}>
+          <Phone kind="android" screenId="home" color={color} config={config}
+                 tabValue="home" setTab={setTab}/>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="live" title="Live map — two takes" subtitle="A: classic top-down radar · B: convoy strip below the map">
+        <DCArtboard id="ios-mapA" label="A · Squad Radar (iOS)" width={402} height={874}>
+          <Phone kind="ios" screenId="mapA" color={color} config={config}
+                 tabValue="mapA" setTab={setTab}/>
+        </DCArtboard>
+        <DCArtboard id="android-mapA" label="A · Squad Radar (Android)" width={428} height={908}>
+          <Phone kind="android" screenId="mapA" color={color} config={config}
+                 tabValue="mapA" setTab={setTab}/>
+        </DCArtboard>
+        <DCArtboard id="ios-mapB" label="B · Convoy Strip (iOS)" width={402} height={874}>
+          <Phone kind="ios" screenId="mapB" color={color} config={config}
+                 tabValue="mapB" setTab={setTab}/>
+        </DCArtboard>
+        <DCArtboard id="android-mapB" label="B · Convoy Strip (Android)" width={428} height={908}>
+          <Phone kind="android" screenId="mapB" color={color} config={config}
+                 tabValue="mapB" setTab={setTab}/>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="plan" title="Plan the ride" subtitle="Route, stops, invitees">
+        <DCArtboard id="ios-plan" label="iOS · Plan ride" width={402} height={874}>
+          <Phone kind="ios" screenId="plan" color={color} config={config}
+                 tabValue="plan" setTab={setTab}/>
+        </DCArtboard>
+        <DCArtboard id="android-plan" label="Android · Plan ride" width={428} height={908}>
+          <Phone kind="android" screenId="plan" color={color} config={config}
+                 tabValue="plan" setTab={setTab}/>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="nav" title="Turn-by-turn" subtitle="Big-instruction nav card with group context">
+        <DCArtboard id="ios-nav" label="iOS · Turn by turn" width={402} height={874}>
+          <Phone kind="ios" screenId="nav" color={color} config={config} showBottomNav={false}/>
+        </DCArtboard>
+        <DCArtboard id="android-nav" label="Android · Turn by turn" width={428} height={908}>
+          <Phone kind="android" screenId="nav" color={color} config={config} showBottomNav={false}/>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="chat" title="Chat + voice ping" subtitle="Group comms while riding">
+        <DCArtboard id="ios-chat" label="iOS · Chat" width={402} height={874}>
+          <Phone kind="ios" screenId="chat" color={color} config={config}
+                 tabValue="chat" setTab={setTab} showBottomNav={false}/>
+        </DCArtboard>
+        <DCArtboard id="android-chat" label="Android · Chat" width={428} height={908}>
+          <Phone kind="android" screenId="chat" color={color} config={config}
+                 tabValue="chat" setTab={setTab} showBottomNav={false}/>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="regroup" title="Regroup at stops" subtitle="Who's here, who's coming, how far out">
+        <DCArtboard id="ios-regroup" label="iOS · Regroup" width={402} height={874}>
+          <Phone kind="ios" screenId="regroup" color={color} config={config} showBottomNav={false}/>
+        </DCArtboard>
+        <DCArtboard id="android-regroup" label="Android · Regroup" width={428} height={908}>
+          <Phone kind="android" screenId="regroup" color={color} config={config} showBottomNav={false}/>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="invite" title="Invite & join" subtitle="Code + link · recents">
+        <DCArtboard id="ios-invite" label="iOS · Invite" width={402} height={874}>
+          <Phone kind="ios" screenId="invite" color={color} config={config} showBottomNav={false}/>
+        </DCArtboard>
+        <DCArtboard id="android-invite" label="Android · Invite" width={428} height={908}>
+          <Phone kind="android" screenId="invite" color={color} config={config} showBottomNav={false}/>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="recap" title="Post-ride recap" subtitle="Distance, cohesion, rider board">
+        <DCArtboard id="ios-recap" label="iOS · Recap" width={402} height={874}>
+          <Phone kind="ios" screenId="recap" color={color} config={config} showBottomNav={false}/>
+        </DCArtboard>
+        <DCArtboard id="android-recap" label="Android · Recap" width={428} height={908}>
+          <Phone kind="android" screenId="recap" color={color} config={config} showBottomNav={false}/>
+        </DCArtboard>
+      </DCSection>
+
+      {tweaksOpen && <TweaksPanel config={config} setConfig={setConfig} onClose={() => setTweaksOpen(false)}/>}
+    </DesignCanvas>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
